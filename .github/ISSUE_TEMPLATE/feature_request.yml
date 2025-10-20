@@ -1,0 +1,32 @@
+name: Feature request
+description: Suggest an idea or enhancement
+labels: [enhancement]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the suggestion! Help us understand your use case.
+  - type: textarea
+    id: problem
+    attributes:
+      label: Related problem
+      description: Is your feature request related to a problem?
+      placeholder: I'm frustrated when...
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      placeholder: Describe the solution you'd like
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: textarea
+    id: details
+    attributes:
+      label: Additional context
+      description: Mockups, flows, example Apex, etc.
+

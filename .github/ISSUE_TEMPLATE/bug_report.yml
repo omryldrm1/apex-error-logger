@@ -1,0 +1,69 @@
+name: Bug report
+description: File a bug report to help us improve
+labels: [bug]
+assignees: []
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug! Please fill out the details below.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: What version or commit are you using?
+      placeholder: v1.0.0 or commit SHA
+    validations:
+      required: true
+  - type: dropdown
+    id: org_type
+    attributes:
+      label: Org type
+      options:
+        - Production
+        - Sandbox
+        - Scratch Org
+        - Developer Edition
+      multiple: false
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      description: Provide minimal code/flows and exact steps
+      placeholder: |
+        1. Go to ...
+        2. Run ...
+        3. Observe ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / screenshots
+      description: Include relevant Apex logs, stack traces, or images
+      render: shell
+  - type: input
+    id: severity
+    attributes:
+      label: Severity
+      placeholder: Critical | High | Medium | Low
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment details
+      placeholder: Salesforce API version, installed packages, etc.
+

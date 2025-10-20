@@ -3,6 +3,8 @@
 .sf/
 .localdevserver/
 deploy-options.json
+temp-retrieve/
+apex-error-logger/
 
 # LWC Jest
 **/__tests__/**
@@ -29,6 +31,12 @@ ehthumbs.db
 Desktop.ini
 
 # Linux
+
+# Local maintainer tooling (kept out of GitHub)
+tools/
+config/private/
+*.local.*
+*.secrets.*
 *~
 
 # Editors

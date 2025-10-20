@@ -1,13 +1,20 @@
 global class EventLogCollector implements Schedulable {
+  @TestVisible static List<EventLogFile> testLogs;
+
   global void execute(SchedulableContext sc) {
     try {
-      List<EventLogFile> logs = [
-        SELECT Id, EventType, LogDate, LogFileLength
-        FROM EventLogFile
-        WHERE EventType IN ('API','ApexExecution','FlowExecution','ApexUnexpectedException')
-        AND LogDate = TODAY
-        LIMIT 200
-      ];
+      List<EventLogFile> logs;
+      if (Test.isRunningTest() && testLogs != null) {
+        logs = testLogs;
+      } else {
+        logs = [
+          SELECT Id, EventType, LogDate, LogFileLength
+          FROM EventLogFile
+          WHERE EventType IN ('API','ApexExecution','FlowExecution','ApexUnexpectedException')
+          AND LogDate = TODAY
+          LIMIT 200
+        ];
+      }
       List<Error_Log__c> toInsert = new List<Error_Log__c>();
       for (EventLogFile e : logs) {
         toInsert.add(new Error_Log__c(
@@ -19,6 +26,9 @@ global class EventLogCollector implements Schedulable {
       }
       if (!toInsert.isEmpty()) {
         Database.insert(toInsert, false);
+      }
+      if (Test.isRunningTest()) {
+        testLogs = null;
       }
     } catch (Exception ex) {
       ErrorLogger.Context ctx = new ErrorLogger.Context();
