@@ -70,7 +70,7 @@ HttpResponse res = HttpClient.send(req); // logs 3xx/4xx/5xx
 - Sensitive data visible? Review masking rules in `ErrorLogger.mask()`.
 
 ## Packaging
-- Unmanaged: see `docs/PACKAGING.md`.
+- Unmanaged: use the install link above.
 - Managed (2GP): Coming soon.
 
 ## License
