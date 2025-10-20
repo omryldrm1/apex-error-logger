@@ -1,4 +1,4 @@
-# Apex Error Logger
+﻿# Apex Error Logger
 
 Enterprise-grade error logging for Salesforce (Apex, Flow, Batch, API, Callouts) with deduplication and sensitive data masking.
 
@@ -6,9 +6,9 @@ Enterprise-grade error logging for Salesforce (Apex, Flow, Batch, API, Callouts)
 [![Apex](https://img.shields.io/badge/Apex-v65.0-blue.svg)](https://developer.salesforce.com/)
 
 ## What You Get
-- Deduplicated errors (SHA-1 signature) with occurrence counts
+- Deduplicated errors (SHA‑1 signature) with occurrence counts
 - PII masking (PAN, IBAN, Email, SSN, Phone, JWT, API/AWS keys)
-- Multi-source support (Apex, Flow, Batch, API, Callout)
+- Multi‑source support (Apex, Flow, Batch, API, Callout)
 - HTTP wrapper with automatic error capture
 - Batch/Queueable finalizer logging
 - EventLogFile collector (schedulable)
@@ -16,11 +16,11 @@ Enterprise-grade error logging for Salesforce (Apex, Flow, Batch, API, Callouts)
 
 ## Install
 
-Option A � Unmanaged Package (recommended)
-- Production/Developer: `https://login.salesforce.com/packaging/installPackage.apexp?p0=04tXXXXXXXXXXXX`
-- Sandbox: `https://test.salesforce.com/packaging/installPackage.apexp?p0=04tXXXXXXXXXXXX`
+Option A — Unmanaged Package (recommended)
+- Production/Developer: `https://login.salesforce.com/packaging/installPackage.apexp?p0=04tg50000000OiH`
+- Sandbox: `https://test.salesforce.com/packaging/installPackage.apexp?p0=04tg50000000OiH`
 
-Option B � Salesforce CLI
+Option B — Salesforce CLI
 ```bash
 git clone https://github.com/omryldrm1/apex-error-logger.git
 cd apex-error-logger
@@ -53,7 +53,7 @@ ErrorLogger.log(new DmlException('Oops'), ctx);
 ```
 
 Flow fault path
-1) Add Action ? Log Flow Error
+1) Add Action → Log Flow Error
 2) Set Message, optional Severity/Parent fields
 
 HTTP callouts
@@ -74,4 +74,4 @@ HttpResponse res = HttpClient.send(req); // logs 3xx/4xx/5xx
 - Managed (2GP): Coming soon.
 
 ## License
-MIT � see `LICENSE`.
+MIT — see `LICENSE`.
