@@ -1,4 +1,4 @@
-public with sharing class LoggingFinalizer {
+﻿public with sharing class LoggingFinalizer {
     private String jobName;
     private String jobType;
     
@@ -92,3 +92,4 @@ public with sharing class LoggingFinalizer {
         return String.join(msgs, ' | ');
     }
 }
+

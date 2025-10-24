@@ -1,4 +1,7 @@
-﻿# Error Log Application
+﻿[![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
+[![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Apex](https://img.shields.io/badge/Salesforce-Apex-blue)](#) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
+
+# Error Log Application
 
 A comprehensive error logging solution for Salesforce applications that captures, aggregates, and securely stores error information.
 
@@ -113,3 +116,5 @@ For issues or feature requests, please submit a GitHub issue in the repository.
 Notes:
 - Utility Bar is optional and excluded from source deploy due to current CLI registry limits. You can add it in Setup → App Manager later if desired.
 - The CustomTab `Error_Log__c` is included and wired into the app.
+\n## Architecture\n\nSee docs/architecture.md for the flow diagram.\n
+
