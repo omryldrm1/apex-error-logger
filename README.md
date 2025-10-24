@@ -1,120 +1,138 @@
-﻿[![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
+[![CI](https://github.com/OWNER/REPO/actions/workflows/ci.yml/badge.svg)](.github/workflows/ci.yml)
 [![License](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Apex](https://img.shields.io/badge/Salesforce-Apex-blue)](#) [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](CONTRIBUTING.md)
 
-# Error Log Application
+# Apex Error Logger
 
-A comprehensive error logging solution for Salesforce applications that captures, aggregates, and securely stores error information.
+> Centralized, governance-safe error logging for Salesforce orgs with duplicate suppression, data redaction, and admin-ready analytics.
+
+## Table of Contents
+
+- [Overview](#overview)
+- [Feature Highlights](#feature-highlights)
+- [Architecture](#architecture)
+- [Installation](#installation)
+- [Usage](#usage)
+- [Data Model & Security](#data-model--security)
+- [Operations & Monitoring](#operations--monitoring)
+- [Testing & CI](#testing--ci)
+- [Support & Contributions](#support--contributions)
+- [License](#license)
 
 ## Overview
 
-The Error Log application provides centralized error tracking for Salesforce orgs, with features for duplicate suppression, data redaction, and detailed error analysis.
+- **Audience:** Salesforce engineering and architecture teams who need reliable post-commit error capture.
+- **Problem solved:** Disparate exception handling, noisy duplicates, and unsafe storage of sensitive payloads.
+- **Approach:** Transaction-finalizer + queueable pipeline that buffers, deduplicates, redacts, and persists to `Error_Log__c`.
+- **Outcome:** Actionable dashboards, clean audit trail, and a low-friction developer API for Apex, Flow, callouts, and platform events.
 
-## Key Features
+## Feature Highlights
 
-### 1. Error Capture
-- Captures exceptions from multiple sources (Apex, Flow, Batch, API, Callouts)
-- Rich contextual information including endpoints, HTTP methods, and payloads
-- Automatic request ID generation for traceability
+- **Unified capture layer** for Apex, Flows, Batch jobs, REST integrations, and callouts (via bundled `HttpClient`).
+- **Duplicate suppression** using normalized signatures and occurrence counters within a configurable time window.
+- **PII-aware redaction** of emails, phones, PAN/IBAN, tokens, UUIDs, and passwords before persistence.
+- **Resilient persistence** leveraging transaction finalizers plus a chunked queueable fallback for high-volume spikes.
+- **Admin tooling** with custom application, tab, and permission sets (`Error_Log_Admin`, `Error_Log_Admin_FULL`, `Error_Log_Viewer`).
 
-### 2. Duplicate Suppression
-- Groups similar errors within a 15-minute window
-- Uses stable signatures to identify duplicate errors
-- Maintains occurrence counts and last occurrence timestamps
+## Architecture
 
-### 3. Data Security
-- Comprehensive redaction of sensitive information:
-  - Email addresses
-  - Phone numbers
-  - Credit card numbers
-  - Authentication tokens
-  - UUIDs and timestamps
-- Configurable masking patterns
-
-### 4. Flexible Architecture
-- Transaction finalizer pattern for reliable post-commit processing
-- Bulk-safe DML operations respecting governor limits
-- Queueable fallback for high-volume scenarios
-- Support for multiple error sources and contexts
-
-## Components
-
-### Custom Objects
-- **Error_Log__c**: Main object storing error information
-
-### Apex Classes
-- **ErrorLogger**: Main logging entry point with aggregation
-- **ErrorSignatureFactory**: Generates stable error signatures
-- **RedactionService**: Removes sensitive data from logs
-- **LoggingFinalizer**: Processes aggregated records after transaction
-- **LoggingFlushQueueable**: Batch processing fallback
-- **FlowErrorLogger**: Specialized flow error logging
-- **EventLogCollector**: Collects platform event logs
-
-### Permission Sets
-- **Error_Log_Admin**: Full access to error logs
-- **Error_Log_Viewer**: Read-only access to error logs
+- Logical flow: exception -> redaction -> signature -> in-memory aggregation -> finalizer/queueable -> `Error_Log__c`.
+- See the full sequence diagram in [`docs/architecture.md`](docs/architecture.md).
+- Utility Bar support is optional and can be enabled in-app once Salesforce CLI adds registry support for `UtilityBar` metadata.
 
 ## Installation
 
-1. Deploy the package to your Salesforce org
-2. Assign the appropriate permission sets to users
-3. Configure any custom settings as needed
+### Prerequisites
+
+- Salesforce CLI (`sf`) v2.0+ and source tracking enabled.
+- API version 65.0 or later available in the target org.
+- Deploying user with `Modify All Data` (or similar) for metadata deployment.
+
+### Option 1 – Install Unmanaged Package
+
+- _Coming soon:_ Insert your package URL here once uploaded from Setup → Packaging.
+
+### Option 2 – Deploy from Source (recommended for evaluation)
+
+```bash
+# Authorize an org if needed
+sf org login web --alias MyErrorLogOrg
+
+# Push the metadata
+sf project deploy start \
+  --manifest manifest/package.xml \
+  --target-org MyErrorLogOrg \
+  --ignore-conflicts \
+  --test-level NoTestRun
+
+# Assign full admin rights to your user
+sf org assign permset --target-org MyErrorLogOrg --name Error_Log_Admin_FULL
+```
+
+### Post-Install Checklist
+
+1. App Launcher → **Error Log** → ensure the **Error Log** tab is visible (restore app defaults if needed).
+2. Confirm permission sets are assigned to intended users (`Admin`, `Admin_FULL`, `Viewer`).
+3. (Optional) Recreate the Utility Bar via Setup → App Manager → Error Log → Utility Items.
+4. Schedule the `EventLogCollector` (if you want daily EventLog ingestion).
 
 ## Usage
 
-### Basic Logging
+### Apex
+
 ```apex
 try {
-    // Your code here
-} catch (Exception e) {
-    ErrorLogger.log(e, new ErrorLogger.Context() {
-        source = 'Apex',
-        severity = 'Error'
-    });
+    // business logic
+} catch (Exception ex) {
+    ErrorLogger.Context ctx = new ErrorLogger.Context();
+    ctx.source = 'Apex';
+    ctx.severity = 'Error';
+    ErrorLogger.log(ex, ctx);
 }
 ```
 
-### Flow Integration
-Use the `FlowErrorLogger` invocable method in your flows to log flow errors.
+### Flow
 
-## Security
+- Drag the **Log Flow Error** invocable action (`FlowErrorLogger`) and pass message, severity, and optional parent record context.
 
-All sensitive data is automatically redacted before storage:
-- Personal Identifiable Information (PII)
-- Financial information (credit cards, IBAN)
-- Authentication credentials
-- Internal identifiers and tokens
+### Callouts / Integrations
 
-## Performance
+- Wrap callouts with the provided `HttpClient.send(req)` helper. Non-2xx responses and exceptions are logged automatically with request/response payload scrubbing.
 
-- Optimized for bulk operations
-- Respects Salesforce governor limits
-- Uses efficient aggregation algorithms
-- Minimal impact on transaction performance
+### Batch / Platform Events
 
-## Administration
+- Attach `LoggingFinalizer` via `System.attachFinalizer` for post-commit flushes.
+- Use `EventLogCollector` (schedulable) to persist selected `EventLogFile` entries as informational logs.
 
-Administrators can:
-- View all error logs with full details
-- Analyze error trends and patterns
-- Monitor system health and stability
-- Configure alerting and reporting
+## Data Model & Security
 
-## Support
+- **Object:** `Error_Log__c` with auto-number name (`EL-{00000}`) and reporting/search enabled.
+- **Key fields:** `Severity__c`, `Source__c`, `Signature__c`, `Occurrence_Count__c`, `Last_Occurrence__c`, HTTP context, payload, and parent references.
+- **Redaction:** `RedactionService` sanitizes messages, payloads, and stack traces before writing; extend by editing pattern lists or externalizing via CMDT in future.
+- **Storage safety:** Long text areas are truncated to governor-safe lengths during finalizer/queueable persistence.
 
-For issues or feature requests, please submit a GitHub issue in the repository.
+## Operations & Monitoring
 
-## Quick Start
+- Build dashboards/reports on `Error_Log__c` for trend analysis (Severity by day, most common endpoints, etc.).
+- Use the included permission sets to separate admin (CRUD) and viewer (read-only) personas.
+- Consider adding Platform Event or Email alerts for `Critical` severity records via Flow/Process Builder.
 
-- Deploy:
-  - `sf project deploy start --manifest manifest/package.xml --target-org <alias>`
-- Assign permission set to see the tab:
-  - `sf org assign permset --target-org <alias> --name Error_Log_Admin_FULL`
-- Open the app:
-  - App Launcher → Error Log → Error Log tab
+## Testing & CI
 
-Notes:
-- Utility Bar is optional and excluded from source deploy due to current CLI registry limits. You can add it in Setup → App Manager later if desired.
-- The CustomTab `Error_Log__c` is included and wired into the app.
-\n## Architecture\n\nSee docs/architecture.md for the flow diagram.\n
+- Run the packaged unit tests:
+
+  ```bash
+  sf apex test run --target-org MyErrorLogOrg --wait 60 --result-format human --code-coverage
+  ```
+
+- GitHub Actions workflow (`.github/workflows/ci.yml`) performs manifest validation. Set a repository secret `SF_AUTH_URL` to enable authenticated validate-only deploys and Apex tests in CI.
+
+## Support & Contributions
+
+- Issues and feature requests: open a ticket via the **Issues** tab.
+- Contributions are welcome—see [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines and code style.
+- Security concerns: follow the disclosure instructions in [SECURITY.md](.github/SECURITY.md).
+
+## License
+
+- MIT. See [LICENSE](LICENSE) for details.
 
