@@ -1,4 +1,4 @@
-<?xml version="1.0" encoding="UTF-8"?>
+﻿<?xml version="1.0" encoding="UTF-8"?>
 <PermissionSet xmlns="http://soap.sforce.com/2006/04/metadata">
     <description>Full access to Error Logs - create, read, update, delete</description>
     <hasActivationRequired>false</hasActivationRequired>
@@ -12,4 +12,9 @@
         <object>Error_Log__c</object>
         <viewAllRecords>true</viewAllRecords>
     </objectPermissions>
+    <tabSettings>
+        <tab>Error_Log__c</tab>
+        <visibility>Visible</visibility>
+    </tabSettings>
 </PermissionSet>
+

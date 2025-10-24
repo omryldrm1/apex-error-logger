@@ -1,0 +1,36 @@
+DEPLOYMENT NOTES FOR APEX ERROR LOGGER PACKAGE
+
+ISSUE IDENTIFIED:
+- Your Salesforce CLI version does not recognize UtilityBar metadata type
+- Error: "Could not infer a metadata type" for Error_Log_UtilityBar.utilityBar-meta.xml
+
+SOLUTION APPROACHES:
+
+1. Alternative File Naming (try renaming):
+   - Rename utilityBar file to match recognized pattern
+   - Try: Error_Log_UtilityBar.metadata.xml or similar
+
+2. Manual Deployment:
+   - Deploy components individually through Salesforce Setup UI
+   - Use Metadata API directly instead of source deploy
+
+3. CLI Version Compatibility:
+   - The UtilityBar type may not be supported in your CLI version
+   - Consider upgrading to newer Salesforce CLI
+
+4. Simplified Approach:
+   - Remove utility bar from package temporarily
+   - Deploy core components (classes, objects, permissions)
+   - Add utility bar manually in target org
+
+CORE COMPONENTS THAT DEPLOY SUCCESSFULLY:
+- Apex Classes (all 6)
+- Custom Object (Error_Log__c) 
+- Permission Sets (3)
+- Application (Error_Log)
+- All tests pass (22/22)
+
+RECOMMENDATION:
+Since the utility bar is causing CLI compatibility issues, remove it from the package for now and deploy the core components. Then manually add the utility bar in your target org through the UI.
+
+This is a known compatibility issue with older Salesforce CLI versions and newer metadata types.

@@ -1,4 +1,34 @@
 public with sharing class ErrorLogger {
+    
+    /**
+     * In-memory buffer for current transaction
+     */
+    private static List<Error_Log__c> buffer = new List<Error_Log__c>();
+    
+    /**
+     * Aggregated records for duplicate suppression (signature -> aggregate)
+     */
+    private static Map<String, AggregateRecord> aggregationMap = new Map<String, AggregateRecord>();
+    
+    /**
+     * Configuration for duplicate window in minutes
+     */
+    private static final Integer DUPLICATE_WINDOW_MINUTES = 15;
+    
+    /**
+     * Inner class to hold aggregated data
+     */
+    private class AggregateRecord {
+        Error_Log__c record;
+        Integer count;
+        DateTime lastOccurrence;
+        
+        AggregateRecord(Error_Log__c r) {
+            this.record = r;
+            this.count = 1;
+            this.lastOccurrence = r.Occurred_At__c;
+        }
+    }
     public class Context {
         public String source;     // Apex | Flow | Batch | API | Callout | Other
         public String severity;   // Critical | Error | Warning | Info
@@ -18,20 +48,24 @@ public with sharing class ErrorLogger {
             rec.Source__c         = (ctx!=null && !String.isBlank(ctx.source))   ? ctx.source   : 'Apex';
             rec.Severity__c       = (ctx!=null && !String.isBlank(ctx.severity)) ? ctx.severity : 'Error';
             rec.Exception_Type__c = e.getTypeName();
-            rec.Message__c        = e.getMessage();
-            rec.Stacktrace__c     = e.getStackTraceString();
+            rec.Message__c        = RedactionService.scrubMessage(e.getMessage());
+            rec.Stacktrace__c     = RedactionService.scrubStacktrace(e.getStackTraceString());
             rec.Request_Id__c     = getRequestId();
             rec.User__c           = UserInfo.getUserId();
             if (ctx != null) {
                 rec.Endpoint__c         = ctx.endpoint;
                 rec.Http_Method__c      = ctx.httpMethod;
                 rec.Http_Status__c      = ctx.httpStatus;
-                rec.Payload__c          = mask(ctx.payload);
+                rec.Payload__c          = RedactionService.scrubPayload(ctx.payload);
                 rec.Parent_Object__c    = ctx.parentObject;
                 rec.Parent_Record_Id__c = ctx.parentRecordId == null ? null : (String)ctx.parentRecordId;
             }
-            rec.Signature__c = signature(rec.Exception_Type__c, rec.Message__c, rec.Stacktrace__c);
-            upsertAggregate(rec);
+            // NEW: Use factory for signature
+            rec.Signature__c = ErrorSignatureFactory.build(e, rec.Message__c, ctx?.source);
+            
+            // NEW: Buffer and aggregate
+            buffer.add(rec);
+            aggregate(rec);
         } catch (DmlException dmlEx) {
             System.debug(LoggingLevel.ERROR, 'ErrorLogger DML failed: ' + dmlEx.getMessage());
         } catch (Exception swallow) {
@@ -105,22 +139,32 @@ public with sharing class ErrorLogger {
         }
     }
 
-    private static void upsertAggregate(Error_Log__c rec) {
-        List<Error_Log__c> exist = [
-            SELECT Id, Occurrence_Count__c
-            FROM Error_Log__c
-            WHERE Signature__c = :rec.Signature__c
-            LIMIT 1
-        ];
-        if (!exist.isEmpty()) {
-            Error_Log__c cur = exist[0];
-            cur.Occurrence_Count__c = (cur.Occurrence_Count__c==null ? 1 : cur.Occurrence_Count__c + 1);
-            cur.Last_Occurrence__c = System.now();
-            update cur;
+    // NEW: Aggregate and deduplicate in memory
+    private static void aggregate(Error_Log__c rec) {
+        String sig = rec.Signature__c;
+        if (String.isBlank(sig)) return;
+        
+        if (aggregationMap.containsKey(sig)) {
+            AggregateRecord agg = aggregationMap.get(sig);
+        // Check if within window
+            if (agg.lastOccurrence != null && (System.now().getTime() - agg.lastOccurrence.getTime())/(1000*60) <= DUPLICATE_WINDOW_MINUTES) {
+                // Update count and timestamp
+                agg.count++;
+                agg.lastOccurrence = System.now();
+                // Update the record fields (we'll flush this later)
+                agg.record.Occurrence_Count__c = agg.count;
+                agg.record.Last_Occurrence__c = agg.lastOccurrence;
+            } else {
+                // Outside window; treat as new
+                aggregationMap.put(sig, new AggregateRecord(rec));
+            }
         } else {
-            rec.Occurrence_Count__c = 1;
-            rec.Last_Occurrence__c = System.now();
-            insert rec;
+            aggregationMap.put(sig, new AggregateRecord(rec));
         }
+    }
+    
+    // Getter method to access buffered records for LoggingFinalizer
+    public static List<Error_Log__c> getBufferedRecords() {
+        return buffer;
     }
 }

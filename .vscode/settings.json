@@ -1,0 +1,7 @@
+﻿{
+    "salesforcedx-vscode-core.push-or-deploy-on-save.enabled":  false,
+    "xml.validation.enabled":  false,
+    "files.associations":  {
+                               "*.utilityBar-meta.xml":  "xml"
+                           }
+}
