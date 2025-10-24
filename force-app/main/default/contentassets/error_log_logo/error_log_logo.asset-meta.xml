@@ -1,0 +1,11 @@
+﻿<?xml version="1.0" encoding="UTF-8"?>
+<ContentAsset xmlns="http://soap.sforce.com/2006/04/metadata">
+    <isVisibleByExternalUsers>false</isVisibleByExternalUsers>
+    <language>en_US</language>
+    <masterLabel>Error Log Logo</masterLabel>
+    <versions>
+        <version>
+            <versionNumber>1</versionNumber>
+        </version>
+    </versions>
+</ContentAsset>

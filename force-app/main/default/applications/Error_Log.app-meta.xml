@@ -2,6 +2,8 @@
 <CustomApplication xmlns="http://soap.sforce.com/2006/04/metadata">
     <brand> 
         <headerColor>#000000</headerColor>
+        <logo>error_log_logo</logo>
+        <logoVersion>1</logoVersion>
         <shouldOverrideOrgTheme>false</shouldOverrideOrgTheme>
     </brand>
     <description>Centralized Error Logging Application for Salesforce with Dashboards and Reports</description>
@@ -16,6 +18,3 @@
     <tabs>Error_Log__c</tabs>
     <uiType>Lightning</uiType>
 </CustomApplication>
-
-
-
