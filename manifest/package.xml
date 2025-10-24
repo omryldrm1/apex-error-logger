@@ -1,12 +1,14 @@
 ﻿<?xml version="1.0" encoding="UTF-8"?>
 <Package xmlns="http://soap.sforce.com/2006/04/metadata">
-    <types>
+        <types>
         <members>ErrorLogger</members>
         <members>HttpClient</members>
         <members>FlowErrorLogger</members>
         <members>LoggingFinalizer</members>
         <members>EventLogCollector</members>
-        <members>ErrorLoggerTest</members>
+        <members>ErrorSignatureFactory</members>
+        <members>LoggingFlushQueueable</members>
+        <members>RedactionService</members>
         <name>ApexClass</name>
     </types>
     <types>
@@ -29,3 +31,4 @@
     </types>
     <version>65.0</version>
 </Package>
+

@@ -1,24 +1,25 @@
 /**
  * @description Queueable job that performs batched insert/update of Error_Log__c records.
- * Used as a fallback when finalizer decides volume is high or when post-commit processing should be decoupled.
+ * Used as a fallback when post-commit processing should be decoupled or for tests to flush buffers.
  *
  * DESIGN:
- *  - Accepts a prebuilt list of Error_Log__c records to persist and/or a map for duplicate suppression resolution.
+ *  - Accepts a prebuilt list of Error_Log__c records to persist (optional).
+ *  - If no list is provided, reads from ErrorLogger's in-memory buffer.
+ *  - Deduplicates by Signature__c and aggregates occurrence count + last occurrence.
  *  - Performs DML in chunks, runs in USER_MODE.
- *
- * SAFETY:
- *  - No SOQL/DML in tight loops beyond chunking; catch and accumulate partial failures with Database methods.
  */
 public with sharing class LoggingFlushQueueable implements Queueable {
+
+    public LoggingFlushQueueable() {
+        this(null, false);
+    }
 
     private List<Error_Log__c> logs;
     private Boolean upsertBySignature;
 
     /**
-     * @param logs Records to persist
-     * @param upsertBySignature If true, upsert using Signature__c as external Id surrogate (requires field to be External Id if used directly).
-     *                          If false, will insert; caller is responsible for prior duplicate resolution.
-     *                          NOTE: Default false to avoid misconfiguration. Most flows should do merge logic before passing to queue.
+     * @param logs Records to persist (optional)
+     * @param upsertBySignature If true, upsert by Signature__c (not used by default).
      */
     public LoggingFlushQueueable(List<Error_Log__c> logs, Boolean upsertBySignature) {
         this.logs = logs == null ? new List<Error_Log__c>() : logs.deepClone(true, true, true);
@@ -26,34 +27,62 @@ public with sharing class LoggingFlushQueueable implements Queueable {
     }
 
     public void execute(QueueableContext qc) {
+        // Populate from ErrorLogger buffer if none provided
+        if (logs == null) logs = new List<Error_Log__c>();
         if (logs.isEmpty()) {
-            return;
+            try {
+                List<Error_Log__c> buf = ErrorLogger.getBufferedRecords();
+                if (buf != null) logs.addAll(buf);
+            } catch (Exception ignore) {
+            }
         }
+        if (logs.isEmpty()) return;
+
         // Truncate oversized long text fields defensively
         for (Error_Log__c r : logs) {
-            r.Message__c = truncate(r.Message__c, 131000);     // near long text safe bound
+            r.Message__c = truncate(r.Message__c, 131000);
             r.Stacktrace__c = truncate(r.Stacktrace__c, 131000);
             r.Payload__c = truncate(r.Payload__c, 131000);
         }
 
-        // Chunk writes to respect DML governor limits
-        final Integer CHUNK = 150;
-        for (Integer i = 0; i < logs.size(); i += CHUNK) {
-            Integer endIndex = Math.min(i + CHUNK, logs.size());
-            List<Error_Log__c> slice = new List<Error_Log__c>();
-            for (Integer j = i; j < endIndex; j++) {
-                slice.add(logs[j]);
-            }
-            if (upsertBySignature) {
-                // If Signature__c is not an External Id, this will fail. Prefer prior merge + insert/update flows.
-                // Here we fallback to naive update/insert by checking existing records by Id (which we likely don't have).
-                // Therefore, default path should pass upsertBySignature=false.
-                Database.SaveResult[] sr = Database.insert(slice, /*allOrNone*/ false, AccessLevel.USER_MODE);
-                handleResults(sr, slice);
+        // Deduplicate by Signature__c and compute occurrence count + last occurrence
+        Map<String, Error_Log__c> baseBySig = new Map<String, Error_Log__c>();
+        Map<String, Integer> counts = new Map<String, Integer>();
+        Map<String, DateTime> lastAt = new Map<String, DateTime>();
+        for (Error_Log__c r : logs) {
+            String sig = String.isBlank(r.Signature__c) ? r.Exception_Type__c + '|' + r.Message__c : r.Signature__c;
+            if (!baseBySig.containsKey(sig)) {
+                Error_Log__c base = r.clone(false, true, false, false);
+                base.Occurrence_Count__c = 1;
+                base.Last_Occurrence__c = r.Occurred_At__c;
+                baseBySig.put(sig, base);
+                counts.put(sig, 1);
+                lastAt.put(sig, r.Occurred_At__c);
             } else {
-                Database.SaveResult[] sr = Database.insert(slice, /*allOrNone*/ false, AccessLevel.USER_MODE);
-                handleResults(sr, slice);
+                counts.put(sig, counts.get(sig) + 1);
+                DateTime prev = lastAt.get(sig);
+                DateTime nowt = r.Occurred_At__c;
+                if (prev == null || (nowt != null && nowt.getTime() > prev.getTime())) {
+                    lastAt.put(sig, nowt);
+                }
             }
+        }
+        List<Error_Log__c> deduped = new List<Error_Log__c>();
+        for (String sig : baseBySig.keySet()) {
+            Error_Log__c rec = baseBySig.get(sig);
+            rec.Occurrence_Count__c = counts.get(sig);
+            rec.Last_Occurrence__c = lastAt.get(sig);
+            deduped.add(rec);
+        }
+
+        // Chunked insert in USER_MODE
+        final Integer CHUNK = 150;
+        for (Integer i = 0; i < deduped.size(); i += CHUNK) {
+            Integer endIndex = Math.min(i + CHUNK, deduped.size());
+            List<Error_Log__c> slice = new List<Error_Log__c>();
+            for (Integer j = i; j < endIndex; j++) slice.add(deduped[j]);
+            Database.SaveResult[] sr = Database.insert(slice, false, AccessLevel.USER_MODE);
+            handleResults(sr, slice);
         }
     }
 
@@ -62,10 +91,8 @@ public with sharing class LoggingFlushQueueable implements Queueable {
         for (Integer idx = 0; idx < results.size(); idx++) {
             Database.SaveResult r = results[idx];
             if (!r.isSuccess()) {
-                // Avoid recursive logging; just capture minimal info
+                // Swallow to avoid recursion
                 String err = 'Error_Log__c DML failed: ' + joinErrors(r.getErrors());
-                // System debug disabled per prod rules; consider platform events or monitoring hook.
-                // System.debug(err);
             }
         }
     }
@@ -85,3 +112,4 @@ public with sharing class LoggingFlushQueueable implements Queueable {
         return s.length() > maxLen ? s.substring(0, maxLen) : s;
     }
 }
+
