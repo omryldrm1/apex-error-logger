@@ -4,9 +4,10 @@
     <caseSensitive>false</caseSensitive>
     <externalId>true</externalId>
     <label>Signature</label>
-    <length>40</length>
+    <length>120</length>
     <required>false</required>
     <trackTrending>false</trackTrending>
     <type>Text</type>
     <unique>true</unique>
 </CustomField>
+
