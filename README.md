@@ -47,11 +47,16 @@
 - API version 65.0 or later available in the target org.
 - Deploying user with `Modify All Data` (or similar) for metadata deployment.
 
-### Option 1 – Install Unmanaged Package
+### Option 1 � Install Unmanaged Package
 
-- _Coming soon:_ Insert your package URL here once uploaded from Setup → Packaging.
+- Click to install in Production/Developer org:
+  - https://login.salesforce.com/packaging/installPackage.apexp?p0=04tg50000000OtZ
+- Installing into a Sandbox? Use:
+  - https://test.salesforce.com/packaging/installPackage.apexp?p0=04tg50000000OtZ
 
-### Option 2 – Deploy from Source (recommended for evaluation)
+
+
+### Option 2 - Deploy from Source (recommended for evaluation)
 
 ```bash
 # Authorize an org if needed
@@ -135,4 +140,8 @@ try {
 ## License
 
 - MIT. See [LICENSE](LICENSE) for details.
+
+
+
+
 

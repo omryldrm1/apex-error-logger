@@ -15,13 +15,13 @@
 public with sharing class RedactionService {
 
     // Replacement markers
-    private static final String EMAIL_MASK = '{EMAIL}';
-    private static final String PHONE_MASK = '{PHONE}';
-    private static final String IBAN_MASK = '{IBAN}';
-    private static final String CC_MASK = '{CARD}';
-    private static final String UUID_MASK = '{UUID}';
-    private static final String TOKEN_MASK = '{TOKEN}';
-    private static final String AUTH_MASK = '{AUTH}';
+    private static final String EMAIL_MASK = '****MASKED_EMAIL****';
+    private static final String PHONE_MASK = '****MASKED_PHONE****';
+    private static final String IBAN_MASK = '****MASKED_IBAN****';
+    private static final String CC_MASK = '****MASKED_PAN****';
+    private static final String UUID_MASK = '****MASKED_UUID****';
+    private static final String TOKEN_MASK = '****MASKED_TOKEN****';
+    private static final String AUTH_MASK = '****MASKED_AUTH****';
 
     /**
      * @description Scrubs a message text from sensitive data.
@@ -52,14 +52,11 @@ public with sharing class RedactionService {
         // Emails
         out = out.replaceAll('\\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}\\b', EMAIL_MASK);
 
-        // Phone numbers (very permissive): sequences of digits with optional separators
-        out = out.replaceAll('(?:(?:\\+\\d{1,3}[\\s-]?)?(?:\\(\\d{1,4}\\)[\\s-]?)?\\d[\\d\\s-]{6,}\\d)', PHONE_MASK);
+        // Credit cards (simple Luhn-friendly patterns). We avoid Luhn calc for performance.
+        out = out.replaceAll('\\b(?:\\d[ -]*?){13,19}\\b', CC_MASK);
 
         // IBAN (generic pattern; country-specific vary)
         out = out.replaceAll('\\b[A-Z]{2}\\d{2}[A-Z0-9]{1,30}\\b', IBAN_MASK);
-
-        // Credit cards (simple Luhn-friendly patterns). We avoid Luhn calc for performance.
-        out = out.replaceAll('\\b(?:\\d[ -]*?){13,19}\\b', CC_MASK);
 
         // UUID v4
         out = out.replaceAll('\\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-4[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}\\b', UUID_MASK);
@@ -72,7 +69,10 @@ public with sharing class RedactionService {
         // token[:=]"value" or token=value (allow optional quotes)
         out = out.replaceAll('(?i)token\\s*[:=]\\s*["\\\']?[A-Za-z0-9._-]+["\\\']?', 'token=' + TOKEN_MASK);
         // api_key / secret / password assignments; avoid backreference ($1) because Apex replaceAll doesn't support replacement group refs
-        out = out.replaceAll('(?i)(api[_-]?key|secret|password)\\s*[:=]\\s*["\\\']?[^"\\\'\\s]+["\\\']?', '$REDACTED=' + TOKEN_MASK);
+        out = out.replaceAll('(?i)(api[_-]?key|secret|password)\\s*[:=]\\s*["\\\']?[^"\\\'\\s]+["\\\']?', 'REDACTED=' + TOKEN_MASK);
+
+        // Phone numbers (very permissive): sequences of digits with optional separators
+        out = out.replaceAll('(?<![A-Za-z0-9])(?:\\+?\\d[\\d\\s()\\-\\.]{7,}\\d)(?![A-Za-z0-9])', PHONE_MASK);
 
         if (aggressive) {
             // Reduce repeated whitespace and common JSON spacing noise

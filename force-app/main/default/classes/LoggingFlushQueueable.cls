@@ -81,9 +81,11 @@ public with sharing class LoggingFlushQueueable implements Queueable {
             Integer endIndex = Math.min(i + CHUNK, deduped.size());
             List<Error_Log__c> slice = new List<Error_Log__c>();
             for (Integer j = i; j < endIndex; j++) slice.add(deduped[j]);
-            Database.SaveResult[] sr = Database.insert(slice, false, AccessLevel.USER_MODE);
+            Database.SaveResult[] sr = Database.insert(slice, false);
             handleResults(sr, slice);
         }
+
+        ErrorLogger.markFlushCompleted();
     }
 
     private static void handleResults(Database.SaveResult[] results, List<Error_Log__c> slice) {
@@ -112,4 +114,3 @@ public with sharing class LoggingFlushQueueable implements Queueable {
         return s.length() > maxLen ? s.substring(0, maxLen) : s;
     }
 }
-

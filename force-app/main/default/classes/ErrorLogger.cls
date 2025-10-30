@@ -1,24 +1,19 @@
 public with sharing class ErrorLogger {
+    @TestVisible private static Integer testInsertCount = 0;
+    @TestVisible private static Integer testUpdateCount = 0;
     @TestVisible private static Boolean flusherScheduled = false;
+    @TestVisible private static Integer testInvocationCount = 0;
+    @TestVisible private static String lastErrorMessage;
+    @TestVisible private static Boolean simulateDuplicateOnInsert = false;
+    @TestVisible private static Boolean forceNoWindowMatch = false;
 
-    /**
-     * In-memory buffer for current transaction
-     */
     private static List<Error_Log__c> buffer = new List<Error_Log__c>();
-
-    /**
-     * Aggregated records for duplicate suppression (signature -> aggregate)
-     */
     private static Map<String, AggregateRecord> aggregationMap = new Map<String, AggregateRecord>();
 
-    /**
-     * Configuration for duplicate window in minutes
-     */
     private static final Integer DUPLICATE_WINDOW_MINUTES = 15;
+    private static final Integer MAX_LONG_TEXT_LENGTH = 131000;
+    private static final Integer SIGNATURE_MAX_LENGTH = 120;
 
-    /**
-     * Inner class to hold aggregated data
-     */
     private class AggregateRecord {
         Error_Log__c record;
         Integer count;
@@ -26,8 +21,13 @@ public with sharing class ErrorLogger {
 
         AggregateRecord(Error_Log__c r) {
             this.record = r;
-            this.count = 1;
-            this.lastOccurrence = r.Occurred_At__c;
+            this.count = 0;
+            this.lastOccurrence = null;
+            if (r != null) {
+                Decimal occ = r.Occurrence_Count__c;
+                this.count = occ == null ? 1 : occ.intValue();
+                this.lastOccurrence = r.Last_Occurrence__c == null ? r.Occurred_At__c : r.Last_Occurrence__c;
+            }
         }
     }
 
@@ -43,200 +43,306 @@ public with sharing class ErrorLogger {
     }
 
     public static void log(Exception e, Context ctx) {
+        testInvocationCount++;
         if (e == null) return;
-        
+
+        lastErrorMessage = null;
         try {
-            Error_Log__c rec = new Error_Log__c();
-            rec.Occurred_At__c    = System.now();
-            rec.Source__c         = (ctx!=null && !String.isBlank(ctx.source))   ? ctx.source   : 'Apex';
-            rec.Severity__c       = (ctx!=null && !String.isBlank(ctx.severity)) ? ctx.severity : 'Error';
-            rec.Exception_Type__c = e.getTypeName();
-            rec.Message__c        = RedactionService.scrubMessage(e.getMessage());
-            rec.Stacktrace__c     = RedactionService.scrubStacktrace(e.getStackTraceString());
-            rec.Request_Id__c     = getRequestId();
-            // In tests, avoid user lookups/assignment side-effects; keep field null unless explicitly needed
-            rec.User__c           = Test.isRunningTest() ? null : UserInfo.getUserId();
-            if (ctx != null) {
-                rec.Endpoint__c         = ctx.endpoint;
-                rec.Http_Method__c      = ctx.httpMethod;
-                rec.Http_Status__c      = ctx.httpStatus;
-                rec.Payload__c          = RedactionService.scrubPayload(ctx.payload);
-                rec.Parent_Object__c    = ctx.parentObject;
-                // In tests, only set Parent_Record_Id__c when Id is valid; otherwise keep null to satisfy tests
-                if (ctx.parentRecordId != null) {
-                    try {
-                        rec.Parent_Record_Id__c = (String)ctx.parentRecordId;
-                    } catch (Exception ignoreParent) {
-                        rec.Parent_Record_Id__c = null;
-                    }
-                } else {
-                    rec.Parent_Record_Id__c = null;
-                }
-            }
-            // Build signature for grouping
-            rec.Signature__c = ErrorSignatureFactory.build(e, rec.Message__c, (ctx==null ? 'Apex' : ctx.source));
-
-            // Buffer and aggregate (retained for potential post-processing)
-            buffer.add(rec);
-            aggregate(rec);
-
-            // Persist immediately with duplicate suppression window logic
+            Error_Log__c rec = buildRecord(e, ctx);
+            trimLongText(rec);
             persistLog(rec);
+            buffer.add(rec.clone(true, true, false, false));
+            trackAggregate(rec);
+            ensureFlushHook();
         } catch (Exception swallow) {
+            lastErrorMessage = swallow.getMessage();
             System.debug(LoggingLevel.ERROR, 'ErrorLogger failed: ' + swallow.getMessage());
         }
     }
 
-    private static String signature(String typeName, String message, String stack) {
-        String top = topFrame(stack);
-        String basis = ((typeName==null?'':typeName) + '|' + top + '|' + left(message,200)).toLowerCase();
-        Blob b = Crypto.generateDigest('SHA1', Blob.valueOf(basis));
-        return EncodingUtil.convertToHex(b);
-    }
-
-    private static String topFrame(String stack) {
-        if (String.isBlank(stack)) return 'noframe';
-        List<String> lines = stack.split('\n');
-        return lines.isEmpty() ? 'noframe' : lines[0];
-    }
-
-    private static String left(String s, Integer n) {
-        return s==null ? null : s.substring(0, Math.min(n, s.length()));
-    }
-
-    private static String mask(String body) {
-        if (String.isBlank(body)) return body;
-        String out = body;
-
-        // Credit cards (13-19 digits)
-        out = out.replaceAll('\\b\\d{13,19}\\b', '****MASKED_PAN****');
-
-        // IBAN (international format)
-        out = out.replaceAll('\\b[A-Z]{2}\\d{2}[A-Z0-9]{10,30}\\b', '****MASKED_IBAN****');
-
-        // Email addresses
-        out = out.replaceAll('[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}', '****MASKED_EMAIL****');
-
-        // US SSN
-        out = out.replaceAll('\\b\\d{3}-\\d{2}-\\d{4}\\b', '****MASKED_SSN****');
-        out = out.replaceAll('\\b\\d{9}\\b', '****MASKED_SSN****');
-
-        // Phone numbers
-        out = out.replaceAll('\\+?\\d{1,3}[\\s.-]?\\(?\\d{3}\\)?[\\s.-]?\\d{3}[\\s.-]?\\d{4}', '****MASKED_PHONE****');
-
-        // Bearer tokens
-        out = out.replaceAll('Bearer\\s+[A-Za-z0-9\\-._~+/]+=*', 'Bearer ****MASKED_TOKEN****');
-
-        // JWT tokens
-        out = out.replaceAll('\\beyJ[A-Za-z0-9_-]+\\.eyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\b', '****MASKED_JWT****');
-
-        // API keys
-        out = out.replaceAll('(api[_-]?key|apikey|api[_-]?token)[\'\"]?\\s*[:=]\\s*[\'\"]?([A-Za-z0-9]{32,64})', '$1=****MASKED_APIKEY****');
-
-        // AWS Keys
-        out = out.replaceAll('\\b(AKIA|ASIA)[A-Z0-9]{16}\\b', '****MASKED_AWS_KEY****');
-
-        // Password fields
-        out = out.replaceAll('(password|passwd|pwd)[\'\"]?\\s*[:=]\\s*[\'\"]?([^\'\",\\s}]+)', '$1=****MASKED_PASSWORD****');
-
-        return out;
-    }
-
-    private static String getRequestId() {
-        if (Test.isRunningTest()) {
-            return 'TEST-' + String.valueOf(System.currentTimeMillis());
-        }
-        try {
-            return Request.getCurrent().getRequestId();
-        } catch (Exception e) {
-            return 'UNKNOWN-' + String.valueOf(System.now().getTime());
-        }
-    }
-
-    // Aggregate and deduplicate in memory
-    private static void aggregate(Error_Log__c rec) {
-        String sig = rec.Signature__c;
-        if (String.isBlank(sig)) return;
-
-        if (aggregationMap.containsKey(sig)) {
-            AggregateRecord agg = aggregationMap.get(sig);
-            // Check if within window
-            if (agg.lastOccurrence != null && (System.now().getTime() - agg.lastOccurrence.getTime())/(1000*60) <= DUPLICATE_WINDOW_MINUTES) {
-                // Update count and timestamp
-                agg.count++;
-                agg.lastOccurrence = System.now();
-                // Update the record fields (we'll flush this later)
-                agg.record.Occurrence_Count__c = agg.count;
-                agg.record.Last_Occurrence__c = agg.lastOccurrence;
+    private static Error_Log__c buildRecord(Exception e, Context ctx) {
+        Error_Log__c rec = new Error_Log__c();
+        rec.Occurred_At__c = System.now();
+        rec.Source__c = (ctx != null && !String.isBlank(ctx.source)) ? ctx.source : 'Apex';
+        rec.Severity__c = (ctx != null && !String.isBlank(ctx.severity)) ? ctx.severity : 'Error';
+        rec.Exception_Type__c = e.getTypeName();
+        rec.Message__c = RedactionService.scrubMessage(e.getMessage());
+        rec.Stacktrace__c = RedactionService.scrubStacktrace(e.getStackTraceString());
+        rec.Request_Id__c = getRequestId();
+        rec.User__c = Test.isRunningTest() ? null : UserInfo.getUserId();
+        if (ctx != null) {
+            rec.Endpoint__c = ctx.endpoint;
+            rec.Http_Method__c = ctx.httpMethod;
+            rec.Http_Status__c = ctx.httpStatus;
+            rec.Payload__c = RedactionService.scrubPayload(ctx.payload);
+            rec.Parent_Object__c = ctx.parentObject;
+            if (ctx.parentRecordId != null) {
+                try {
+                    rec.Parent_Record_Id__c = (String)ctx.parentRecordId;
+                } catch (Exception ignoreParent) {
+                    rec.Parent_Record_Id__c = null;
+                }
             } else {
-                // Outside window; treat as new
-                aggregationMap.put(sig, new AggregateRecord(rec));
+                rec.Parent_Record_Id__c = null;
             }
-        } else {
-            aggregationMap.put(sig, new AggregateRecord(rec));
         }
+        rec.Signature__c = clampSignature(ErrorSignatureFactory.build(e, rec.Message__c, rec.Source__c));
+        return rec;
     }
 
-    // Getter method to access buffered records for flushers (legacy support)
-    public static List<Error_Log__c> getBufferedRecords() {
-        return buffer;
+    private static void trimLongText(Error_Log__c rec) {
+        if (rec == null) return;
+        rec.Message__c = truncate(rec.Message__c);
+        rec.Stacktrace__c = truncate(rec.Stacktrace__c);
+        rec.Payload__c = truncate(rec.Payload__c);
     }
 
-    @TestVisible
+    private static String truncate(String value) {
+        if (value == null) return null;
+        return value.length() > MAX_LONG_TEXT_LENGTH ? value.substring(0, MAX_LONG_TEXT_LENGTH) : value;
+    }
+
     private static void persistLog(Error_Log__c rec) {
-        rec.Occurrence_Count__c = rec.Occurrence_Count__c == null ? 1 : rec.Occurrence_Count__c;
-        rec.Last_Occurrence__c = rec.Occurred_At__c;
+        if (rec == null) return;
+        DateTime occurredAt = rec.Occurred_At__c == null ? System.now() : rec.Occurred_At__c;
+        Error_Log__c existing = forceNoWindowMatch ? null : findExisting(rec.Signature__c, occurredAt);
 
-        Error_Log__c existing;
-        try {
-            existing = [
-                SELECT Id, Occurrence_Count__c, Last_Occurrence__c, CreatedDate
-                FROM Error_Log__c
-                WHERE Signature__c = :rec.Signature__c
-                LIMIT 1
-            ];
-        } catch (QueryException qe) {
-            existing = null;
+        if (existing == null) {
+            rec.Occurrence_Count__c = 1;
+            rec.Last_Occurrence__c = rec.Occurred_At__c;
+            Boolean inserted = tryInsert(rec);
+            if (inserted) {
+                return;
+            }
+            existing = findAnyBySignature(rec.Signature__c);
+            if (existing == null) {
+                String originalSignature = rec.Signature__c;
+                rec.Signature__c = fallbackSignature(originalSignature);
+                rec.Occurrence_Count__c = 1;
+                rec.Last_Occurrence__c = rec.Occurred_At__c;
+                if (tryInsert(rec)) {
+                    return;
+                }
+                existing = findAnyBySignature(rec.Signature__c);
+                if (existing == null) {
+                    rec.Signature__c = originalSignature;
+                }
+            }
         }
 
         if (existing != null) {
-            Integer current = existing.Occurrence_Count__c == null ? 0 : Integer.valueOf(existing.Occurrence_Count__c);
-            existing.Occurrence_Count__c = current + 1;
-            existing.Last_Occurrence__c = rec.Occurred_At__c;
-            existing.Message__c = rec.Message__c;
-            existing.Stacktrace__c = rec.Stacktrace__c;
-            existing.Payload__c = rec.Payload__c;
-            existing.Http_Status__c = rec.Http_Status__c;
-            existing.Http_Method__c = rec.Http_Method__c;
-            existing.Endpoint__c = rec.Endpoint__c;
-            existing.Parent_Object__c = rec.Parent_Object__c;
-            existing.Parent_Record_Id__c = rec.Parent_Record_Id__c;
-            Database.SaveResult[] updateResult = Database.update(
-                new List<Error_Log__c>{ existing },
-                false,
-                AccessLevel.SYSTEM_MODE
-            );
-            if (!updateResult.isEmpty() && !updateResult[0].isSuccess()) {
-                System.debug(LoggingLevel.ERROR, 'ErrorLogger update failed: ' + updateResult[0].getErrors()[0].getMessage());
-            }
-            return;
-        }
-
-        try {
-            Database.SaveResult[] insertResult = Database.insert(
-                new List<Error_Log__c>{ rec },
-                false,
-                AccessLevel.SYSTEM_MODE
-            );
-            if (!insertResult.isEmpty() && !insertResult[0].isSuccess()) {
-                System.debug(LoggingLevel.ERROR, 'ErrorLogger insert failed: ' + insertResult[0].getErrors()[0].getMessage());
-            }
-        } catch (DmlException dmlex) {
-            System.debug(LoggingLevel.ERROR, 'ErrorLogger insert failed: ' + dmlex.getMessage());
+            mergeForUpdate(existing, rec);
+            performUpdate(existing);
+            rec.Id = existing.Id;
+            rec.Occurrence_Count__c = existing.Occurrence_Count__c;
+            rec.Last_Occurrence__c = existing.Last_Occurrence__c;
         }
     }
+
+    private static Error_Log__c findExisting(String signature, DateTime occurredAt) {
+        if (String.isBlank(signature)) return null;
+        DateTime windowStart = occurredAt == null ? System.now().addMinutes(-DUPLICATE_WINDOW_MINUTES) : occurredAt.addMinutes(-DUPLICATE_WINDOW_MINUTES);
+        List<Error_Log__c> rows = [
+            SELECT Id, Occurrence_Count__c, Last_Occurrence__c, Message__c, Stacktrace__c, Payload__c,
+                   Http_Status__c, Http_Method__c, Endpoint__c, Parent_Object__c, Parent_Record_Id__c,
+                   Severity__c, Source__c, Request_Id__c, User__c, Occurred_At__c
+            FROM Error_Log__c
+            WHERE Signature__c = :signature
+              AND (
+                  Last_Occurrence__c >= :windowStart
+                  OR (Last_Occurrence__c = NULL AND Occurred_At__c >= :windowStart)
+              )
+            ORDER BY Last_Occurrence__c DESC, Occurred_At__c DESC
+            LIMIT 1
+        ];
+        return rows.isEmpty() ? null : rows[0];
+    }
+
+    private static Error_Log__c findAnyBySignature(String signature) {
+        if (String.isBlank(signature)) return null;
+        List<Error_Log__c> rows = [
+            SELECT Id, Occurrence_Count__c, Last_Occurrence__c, Message__c, Stacktrace__c, Payload__c,
+                   Http_Status__c, Http_Method__c, Endpoint__c, Parent_Object__c, Parent_Record_Id__c,
+                   Severity__c, Source__c, Request_Id__c, User__c, Occurred_At__c
+            FROM Error_Log__c
+            WHERE Signature__c = :signature
+            LIMIT 1
+        ];
+        return rows.isEmpty() ? null : rows[0];
+    }
+
+    private static Boolean tryInsert(Error_Log__c rec) {
+        try {
+            if (Test.isRunningTest() && simulateDuplicateOnInsert) {
+                simulateDuplicateOnInsert = false;
+                return false;
+            }
+            if (Test.isRunningTest()) {
+                insert rec;
+                testInsertCount++;
+            } else {
+                Database.SaveResult[] results = Database.insert(new List<Error_Log__c>{ rec }, false);
+                Database.SaveResult sr = results.isEmpty() ? null : results[0];
+                if (sr != null && sr.isSuccess()) {
+                    rec.Id = sr.getId();
+                    testInsertCount++;
+                } else if (sr != null) {
+                    throw new DmlException(joinErrors(sr.getErrors()));
+                }
+            }
+            return true;
+        } catch (DmlException dml) {
+            if (isDuplicateSignatureError(dml)) {
+                return false;
+            }
+            throw dml;
+        }
+    }
+
+    private static void mergeForUpdate(Error_Log__c target, Error_Log__c source) {
+        Decimal currentCount = target.Occurrence_Count__c == null ? 0 : target.Occurrence_Count__c;
+        currentCount = (currentCount == null ? 0 : currentCount) + 1;
+        target.Occurrence_Count__c = currentCount;
+        target.Last_Occurrence__c = source.Occurred_At__c;
+        target.Message__c = source.Message__c;
+        target.Stacktrace__c = source.Stacktrace__c;
+        target.Payload__c = source.Payload__c;
+        target.Http_Status__c = source.Http_Status__c;
+        target.Http_Method__c = source.Http_Method__c;
+        target.Endpoint__c = source.Endpoint__c;
+        target.Parent_Object__c = source.Parent_Object__c;
+        target.Parent_Record_Id__c = source.Parent_Record_Id__c;
+        target.Severity__c = source.Severity__c;
+        target.Source__c = source.Source__c;
+        target.Request_Id__c = source.Request_Id__c;
+        target.User__c = source.User__c;
+        target.Occurred_At__c = source.Occurred_At__c;
+    }
+
+    private static void performUpdate(Error_Log__c recordToUpdate) {
+        if (recordToUpdate == null) return;
+        if (Test.isRunningTest()) {
+            update recordToUpdate;
+            testUpdateCount++;
+        } else {
+            Database.SaveResult[] results = Database.update(new List<Error_Log__c>{ recordToUpdate }, false);
+            Database.SaveResult sr = results.isEmpty() ? null : results[0];
+            if (sr != null && sr.isSuccess()) {
+                testUpdateCount++;
+            } else if (sr != null) {
+                throw new DmlException(joinErrors(sr.getErrors()));
+            }
+        }
+    }
+
+    private static Boolean isDuplicateSignatureError(DmlException ex) {
+        if (ex == null) return false;
+        try {
+            for (Integer i = 0; i < ex.getNumDml(); i++) {
+                if (ex.getDmlType(i) == System.StatusCode.DUPLICATE_VALUE) {
+                    return true;
+                }
+            }
+        } catch (Exception ignore) {
+        }
+        String msg = ex.getMessage();
+        return msg != null && msg.contains('Signature__c') && msg.toLowerCase().contains('duplicate');
+    }
+
+    private static void trackAggregate(Error_Log__c rec) {
+        if (rec == null) return;
+        String key = aggregationKey(rec);
+        Error_Log__c cloneRec = cloneForAggregation(rec);
+        AggregateRecord agg = aggregationMap.get(key);
+        if (agg == null) {
+            aggregationMap.put(key, new AggregateRecord(cloneRec));
+        } else {
+            agg.record = cloneRec;
+            agg.count = cloneRec.Occurrence_Count__c == null ? agg.count : cloneRec.Occurrence_Count__c.intValue();
+            agg.lastOccurrence = cloneRec.Last_Occurrence__c;
+        }
+    }
+
+    private static Error_Log__c cloneForAggregation(Error_Log__c rec) {
+        Error_Log__c cloneRec = rec.clone(true, true, false, false);
+        cloneRec.Occurrence_Count__c = rec.Occurrence_Count__c;
+        cloneRec.Last_Occurrence__c = rec.Last_Occurrence__c == null ? rec.Occurred_At__c : rec.Last_Occurrence__c;
+        return cloneRec;
+    }
+
+    private static String aggregationKey(Error_Log__c rec) {
+        if (rec == null) return null;
+        if (!String.isBlank(rec.Signature__c)) return rec.Signature__c;
+        return (rec.Exception_Type__c == null ? 'Unknown' : rec.Exception_Type__c) + '|' + (rec.Message__c == null ? '' : rec.Message__c);
+    }
+
+    private static void ensureFlushHook() {
+        if (Test.isRunningTest() || flusherScheduled) return;
+        try {
+            System.enqueueJob(new LoggingFlushQueueable());
+            flusherScheduled = true;
+        } catch (Exception ignore) {
+            flusherScheduled = false;
+        }
+    }
+
+    @TestVisible
+    public static List<Error_Log__c> getBufferedRecords() {
+        List<Error_Log__c> out = new List<Error_Log__c>();
+        for (AggregateRecord agg : aggregationMap.values()) {
+            if (agg == null || agg.record == null) continue;
+            Error_Log__c copy = agg.record.clone(true, true, false, false);
+            copy.Occurrence_Count__c = agg.count;
+            copy.Last_Occurrence__c = agg.lastOccurrence;
+            out.add(copy);
+        }
+        return out;
+    }
+
+    @TestVisible
+    public static void clearBufferedState() {
+        buffer.clear();
+        aggregationMap.clear();
+        flusherScheduled = false;
+    }
+
+    public static void markFlushCompleted() {
+        clearBufferedState();
+    }
+
+    private static String getRequestId() {
+        String seed = String.valueOf(System.now().getTime()) + ':' + String.valueOf(Math.random());
+        Blob digest = Crypto.generateDigest('MD5', Blob.valueOf(seed));
+        return EncodingUtil.convertToHex(digest);
+    }
+
+    private static String fallbackSignature(String signature) {
+        String base = String.isBlank(signature) ? 'no_sig' : clampSignature(signature);
+        String suffixSeed = String.valueOf(System.now().getTime()) + ':' + String.valueOf(Math.random());
+        String suffixHex = EncodingUtil.convertToHex(Crypto.generateDigest('MD5', Blob.valueOf(suffixSeed)));
+        String suffix = '|dup-' + suffixHex.substring(0, 6);
+        Integer maxBaseLength = SIGNATURE_MAX_LENGTH - suffix.length();
+        if (maxBaseLength < 1) {
+            maxBaseLength = SIGNATURE_MAX_LENGTH;
+            suffix = suffix.substring(0, Math.max(0, SIGNATURE_MAX_LENGTH - 1));
+        }
+        if (base.length() > maxBaseLength) {
+            base = base.substring(0, maxBaseLength);
+        }
+        return clampSignature(base + suffix);
+    }
+
+    private static String clampSignature(String signature) {
+        if (String.isBlank(signature)) return signature;
+        return signature.length() > SIGNATURE_MAX_LENGTH ? signature.substring(0, SIGNATURE_MAX_LENGTH) : signature;
+    }
+
+    private static String joinErrors(Database.Error[] errs) {
+        if (errs == null || errs.isEmpty()) return 'Unknown error';
+        List<String> msgs = new List<String>();
+        for (Database.Error err : errs) {
+            msgs.add((err.getStatusCode() == null ? '' : String.valueOf(err.getStatusCode())) + ':' + err.getMessage());
+        }
+        return String.join(msgs, ' | ');
+    }
 }
-
-
-
-

@@ -1,4 +1,4 @@
-public with sharing class LoggingFinalizer {
+public with sharing class LoggingFinalizer implements System.Finalizer {
     private String jobName;
     private String jobType;
     
@@ -14,7 +14,7 @@ public with sharing class LoggingFinalizer {
         this.jobType = 'Unknown';
     }
     
-    public void finalize() {
+    public void execute(System.FinalizerContext context) {
         // This method is called after a transaction completes.
         // We flush our buffered logs to the database.
         
@@ -42,7 +42,7 @@ public with sharing class LoggingFinalizer {
         // Perform DML operations
         if (!toInsert.isEmpty()) {
             try {
-                Database.SaveResult[] results = Database.insert(toInsert, false, AccessLevel.USER_MODE);
+                Database.SaveResult[] results = Database.insert(toInsert, false);
                 handleSaveResults(results, toInsert, 'INSERT');
             } catch (Exception e) {
                 System.debug(LoggingLevel.ERROR, 'Error inserting error logs: ' + e.getMessage());
@@ -51,26 +51,29 @@ public with sharing class LoggingFinalizer {
         
         if (!toUpdate.isEmpty()) {
             try {
-                Database.SaveResult[] results = Database.update(toUpdate, false, AccessLevel.USER_MODE);
+                Database.SaveResult[] results = Database.update(toUpdate, false);
                 handleSaveResults(results, toUpdate, 'UPDATE');
             } catch (Exception e) {
                 System.debug(LoggingLevel.ERROR, 'Error updating error logs: ' + e.getMessage());
             }
         }
+
+        ErrorLogger.markFlushCompleted();
     }
     
     // Static test method for testing the handleResult functionality
     public static void testHandleResult(LoggingFinalizer fin, System.ParentJobResult result, String jobId) {
-        // This simulates the behavior of the real handleResult method
-        if (result != System.ParentJobResult.SUCCESS) {
-            // Create a mock error log for testing
-            Error_Log__c log = new Error_Log__c();
-            log.Source__c = fin.jobType;
-            log.Severity__c = 'Critical';
-            log.Parent_Object__c = fin.jobName;
-            log.Message__c = 'Job ' + jobId + ' failed';
-            // Note: In a real scenario, this would actually insert the log
+        if (result == System.ParentJobResult.SUCCESS) {
+            return;
         }
+        LoggingFinalizer target = fin == null ? new LoggingFinalizer() : fin;
+        ErrorLogger.Context ctx = new ErrorLogger.Context();
+        ctx.source = 'Batch';
+        ctx.severity = 'Critical';
+        ctx.parentObject = target.jobName;
+
+        Exception failure = new CalloutException('Job ' + jobId + ' failed');
+        ErrorLogger.log(failure, ctx);
     }
     
     private static void handleSaveResults(Database.SaveResult[] results, List<Error_Log__c> records, String operation) {
@@ -92,4 +95,3 @@ public with sharing class LoggingFinalizer {
         return String.join(msgs, ' | ');
     }
 }
-

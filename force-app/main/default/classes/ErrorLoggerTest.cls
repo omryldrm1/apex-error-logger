@@ -45,6 +45,10 @@ private class ErrorLoggerTest {
         List<Error_Log__c> logs = [SELECT Occurrence_Count__c FROM Error_Log__c];
         System.assertEquals(1, logs.size(), 'Should be single record');
         System.assertEquals(2, logs[0].Occurrence_Count__c, 'Count should increment');
+        List<Error_Log__c> buffered = ErrorLogger.getBufferedRecords();
+        System.assertEquals(1, buffered.size(), 'Buffer should retain aggregated record');
+        System.assertEquals(2, buffered[0].Occurrence_Count__c, 'Aggregate count should mirror persisted value');
+        ErrorLogger.clearBufferedState();
     }
 
     @IsTest static void testMaskingAllTypes() {
@@ -171,6 +175,90 @@ private class ErrorLoggerTest {
         Test.stopTest();
         // EventLogFile query executes (no data in test context)
         System.assert(true, 'EventLogCollector executed');
+    }
+
+    @IsTest static void testBufferLifecycle() {
+        ErrorLogger.clearBufferedState();
+        ErrorLogger.Context ctx = new ErrorLogger.Context();
+        ctx.source = 'API';
+        ErrorLogger.log(new DmlException('Buffer lifecycle'), ctx);
+        System.assert(!ErrorLogger.getBufferedRecords().isEmpty(), 'Buffered records should include latest log');
+        ErrorLogger.markFlushCompleted();
+        System.assertEquals(0, ErrorLogger.getBufferedRecords().size(), 'Flush completion should clear buffered records');
+    }
+
+    @IsTest static void testDuplicateOutsideWindowUsesFallback() {
+        ErrorLogger.clearBufferedState();
+        DmlException e = new DmlException('Duplicate outside window');
+        String msg = RedactionService.scrubMessage(e.getMessage());
+        String sig = ErrorSignatureFactory.build(e, msg, 'Apex');
+        if (sig.length() > 120) {
+            sig = sig.substring(0, 120);
+        }
+        Error_Log__c legacy = new Error_Log__c(
+            Occurred_At__c = System.now().addMinutes(-30),
+            Source__c = 'Apex',
+            Severity__c = 'Error',
+            Exception_Type__c = e.getTypeName(),
+            Message__c = msg,
+            Stacktrace__c = RedactionService.scrubStacktrace(e.getStackTraceString()),
+            Signature__c = sig,
+            Occurrence_Count__c = 3,
+            Last_Occurrence__c = System.now().addMinutes(-30)
+        );
+        insert legacy;
+
+        Test.startTest();
+        ErrorLogger.forceNoWindowMatch = true;
+        ErrorLogger.simulateDuplicateOnInsert = true;
+        ErrorLogger.log(e, null);
+        Test.stopTest();
+        ErrorLogger.forceNoWindowMatch = false;
+        ErrorLogger.simulateDuplicateOnInsert = false;
+
+        Error_Log__c reloaded = [SELECT Occurrence_Count__c, Last_Occurrence__c FROM Error_Log__c WHERE Id = :legacy.Id];
+        System.assertEquals(4, reloaded.Occurrence_Count__c, 'Fallback path should increment occurrence count');
+        System.assert(reloaded.Last_Occurrence__c > legacy.Last_Occurrence__c, 'Last occurrence should move forward');
+        ErrorLogger.clearBufferedState();
+    }
+
+    @IsTest static void testDuplicateInsertsFallbackSignature() {
+        ErrorLogger.clearBufferedState();
+        DmlException e = new DmlException('Fallback duplicate scenario');
+        ErrorLogger.Context ctx = new ErrorLogger.Context();
+        ctx.source = 'Apex';
+
+        Test.startTest();
+        ErrorLogger.simulateDuplicateOnInsert = true;
+        ErrorLogger.log(e, ctx);
+        Test.stopTest();
+
+        List<Error_Log__c> created = [
+            SELECT Signature__c, Occurrence_Count__c
+            FROM Error_Log__c
+            ORDER BY CreatedDate DESC
+            LIMIT 1
+        ];
+        System.assertEquals(1, created.size(), 'Fallback insert should create a record');
+        System.assert(created[0].Signature__c.contains('|dup-'), 'Fallback signature should be suffixed');
+        System.assertEquals(1, created[0].Occurrence_Count__c, 'Fallback record should start with occurrence count 1');
+        ErrorLogger.simulateDuplicateOnInsert = false;
+        ErrorLogger.clearBufferedState();
+    }
+
+    @IsTest static void testInvalidSourceGracefullyHandled() {
+        ErrorLogger.clearBufferedState();
+        ErrorLogger.Context ctx = new ErrorLogger.Context();
+        ctx.source = 'InvalidPicklist';
+        Integer beforeCount = [SELECT COUNT() FROM Error_Log__c];
+
+        Test.startTest();
+        ErrorLogger.log(new CalloutException('Bad source'), ctx);
+        Test.stopTest();
+
+        Integer afterCount = [SELECT COUNT() FROM Error_Log__c];
+        System.assertEquals(beforeCount, afterCount, 'Invalid picklist values must fail insert');
+        System.assertNotEquals(null, ErrorLogger.lastErrorMessage, 'Failure should set lastErrorMessage');
     }
 
     // Helper class for finalizer test

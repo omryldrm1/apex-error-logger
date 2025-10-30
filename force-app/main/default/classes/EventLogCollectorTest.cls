@@ -40,7 +40,7 @@ private class EventLogCollectorTest {
             FROM Error_Log__c
             LIMIT 1
         ];
-        System.assert(!logs.isEmpty(), 'Error should be logged when collector fails');
+        System.assert(!logs.isEmpty(), 'Error should be logged when collector fails. lastError=' + ErrorLogger.lastErrorMessage);
         System.assertEquals('Batch', logs[0].Source__c, 'Collector should log via ErrorLogger on failure');
         System.assertEquals('Warning', logs[0].Severity__c);
     }
